@@ -1,0 +1,85 @@
+# Full Evently stack.
+#   docker compose up --build            → everything; web app on http://localhost:3000
+#   docker compose up -d postgres redis  → infrastructure only (for `npm run dev`)
+
+x-service-env: &service-env
+  NODE_ENV: production
+  LOG_LEVEL: info
+  DATABASE_URL: postgres://evently:evently@postgres:5432/evently
+  REDIS_URL: redis://redis:6379
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-compose-internal-token-change-me}
+  JWT_SECRET: ${JWT_SECRET:-compose-jwt-secret-change-me-please}
+  BOOKING_SERVICE_URL: http://booking-service:4003
+
+x-service: &service
+  restart: unless-stopped
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: evently
+      POSTGRES_PASSWORD: evently
+      POSTGRES_DB: evently
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evently"]
+      interval: 2s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 20
+
+  auth-service:
+    <<: *service
+    build: { context: ., args: { SERVICE: auth-service } }
+    environment:
+      <<: *service-env
+      PORT: 4001
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@evently.dev}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin12345}
+
+  catalog-service:
+    <<: *service
+    build: { context: ., args: { SERVICE: catalog-service } }
+    environment: { <<: *service-env, PORT: 4002 }
+
+  booking-service:
+    <<: *service
+    build: { context: ., args: { SERVICE: booking-service } }
+    environment: { <<: *service-env, PORT: 4003 }
+
+  notify-service:
+    <<: *service
+    build: { context: ., args: { SERVICE: notify-service } }
+    environment: { <<: *service-env, PORT: 4004 }
+
+  gateway:
+    <<: *service
+    build: { context: ., args: { SERVICE: gateway } }
+    environment:
+      <<: *service-env
+      PORT: 8080
+      AUTH_SERVICE_URL: http://auth-service:4001
+      CATALOG_SERVICE_URL: http://catalog-service:4002
+      NOTIFY_SERVICE_URL: http://notify-service:4004
+    ports: ["8080:8080"]
+
+  web:
+    build: { context: ., dockerfile: frontend/Dockerfile }
+    environment:
+      API_UPSTREAM: http://gateway:8080
+    depends_on: [gateway]
+    ports: ["3000:80"]
+
+volumes:
+  pgdata:

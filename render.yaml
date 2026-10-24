@@ -1,0 +1,134 @@
+# Render Blueprint – deploys the whole platform (New → Blueprint → pick this repo).
+# See docs/DEPLOYMENT.md for the step-by-step guide and free-tier notes.
+#
+# Free-tier note: free web services cannot RECEIVE private-network traffic, so
+# service-to-service calls use public URLs (protected by INTERNAL_API_TOKEN).
+# If Render assigns a different hostname than https://<name>.onrender.com,
+# update the *_SERVICE_URL variables and the static-site rewrite below.
+
+databases:
+  - name: evently-db
+    plan: free
+    databaseName: evently
+    user: evently
+
+envVarGroups:
+  - name: evently-shared
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: INTERNAL_API_TOKEN
+        generateValue: true
+      - key: JWT_SECRET
+        generateValue: true
+
+services:
+  - type: keyvalue
+    name: evently-redis
+    plan: free
+    maxmemoryPolicy: noeviction # streams must never be evicted
+    ipAllowList: []             # internal connections only
+
+  - type: web
+    name: evently-auth
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include-workspace-root -w @evently/shared -w @evently/auth-service && npm run build -w @evently/shared -w @evently/auth-service
+    startCommand: node services/auth-service/dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: evently-shared
+      - key: DATABASE_URL
+        fromDatabase: { name: evently-db, property: connectionString }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: evently-redis, property: connectionString }
+      - key: ADMIN_EMAIL
+        value: admin@evently.dev
+      - key: ADMIN_PASSWORD
+        sync: false # set in the dashboard
+
+  - type: web
+    name: evently-catalog
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include-workspace-root -w @evently/shared -w @evently/catalog-service && npm run build -w @evently/shared -w @evently/catalog-service
+    startCommand: node services/catalog-service/dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: evently-shared
+      - key: DATABASE_URL
+        fromDatabase: { name: evently-db, property: connectionString }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: evently-redis, property: connectionString }
+      - key: BOOKING_SERVICE_URL
+        value: https://evently-booking.onrender.com
+
+  - type: web
+    name: evently-booking
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include-workspace-root -w @evently/shared -w @evently/booking-service && npm run build -w @evently/shared -w @evently/booking-service
+    startCommand: node services/booking-service/dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: evently-shared
+      - key: DATABASE_URL
+        fromDatabase: { name: evently-db, property: connectionString }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: evently-redis, property: connectionString }
+
+  - type: web
+    name: evently-notify
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include-workspace-root -w @evently/shared -w @evently/notify-service && npm run build -w @evently/shared -w @evently/notify-service
+    startCommand: node services/notify-service/dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: evently-shared
+      - key: DATABASE_URL
+        fromDatabase: { name: evently-db, property: connectionString }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: evently-redis, property: connectionString }
+
+  - type: web
+    name: evently-gateway
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include-workspace-root -w @evently/shared -w @evently/gateway && npm run build -w @evently/shared -w @evently/gateway
+    startCommand: node services/gateway/dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: evently-shared
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: evently-redis, property: connectionString }
+      - key: AUTH_SERVICE_URL
+        value: https://evently-auth.onrender.com
+      - key: CATALOG_SERVICE_URL
+        value: https://evently-catalog.onrender.com
+      - key: BOOKING_SERVICE_URL
+        value: https://evently-booking.onrender.com
+      - key: NOTIFY_SERVICE_URL
+        value: https://evently-notify.onrender.com
+      - key: CORS_ORIGINS
+        value: https://evently-web.onrender.com
+
+  - type: web
+    name: evently-web
+    runtime: static
+    buildCommand: npm ci --include-workspace-root -w @evently/frontend && npm run build -w @evently/frontend
+    staticPublishPath: ./frontend/dist
+    headers:
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      # Same-origin API calls: the static site proxies /api to the gateway.
+      - type: rewrite
+        source: /api/*
+        destination: https://evently-gateway.onrender.com/api/*
+      - type: rewrite
+        source: /*
+        destination: /index.html
