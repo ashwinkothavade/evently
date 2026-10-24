@@ -1,0 +1,19 @@
+{
+  "name": "@evently/booking-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Inventory, seat allocation, bookings and waitlist – the consistency-critical core.",
+  "scripts": {
+    "dev": "tsx watch --conditions=development src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "LOG_LEVEL=warn node --conditions=development --import tsx --test --test-concurrency=1 test/*.test.ts"
+  },
+  "dependencies": {
+    "@evently/shared": "*",
+    "express": "^5.2.0",
+    "zod": "^4.1.0"
+  }
+}
