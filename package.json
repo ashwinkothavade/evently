@@ -1,0 +1,42 @@
+{
+  "name": "evently",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Evently – scalable event ticketing platform (microservices + React frontend)",
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "services/auth-service",
+    "services/catalog-service",
+    "services/booking-service",
+    "services/notify-service",
+    "services/gateway",
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "build:shared": "npm run build -w @evently/shared",
+    "dev": "npm run build:shared && concurrently -k -n auth,catalog,booking,notify,gateway,web -c blue,magenta,green,yellow,cyan,white \"npm:dev -w @evently/auth-service\" \"npm:dev -w @evently/catalog-service\" \"npm:dev -w @evently/booking-service\" \"npm:dev -w @evently/notify-service\" \"npm:dev -w @evently/gateway\" \"npm:dev -w @evently/frontend\"",
+    "dev:api": "npm run build:shared && concurrently -k -n auth,catalog,booking,notify,gateway \"npm:dev -w @evently/auth-service\" \"npm:dev -w @evently/catalog-service\" \"npm:dev -w @evently/booking-service\" \"npm:dev -w @evently/notify-service\" \"npm:dev -w @evently/gateway\"",
+    "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present",
+    "test": "npm run build:shared && npm test -w @evently/gateway && npm test -w @evently/booking-service",
+    "seed": "tsx scripts/seed.ts",
+    "loadtest": "tsx scripts/loadtest.ts",
+    "infra:up": "docker compose up -d postgres redis",
+    "infra:down": "docker compose down"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
+    "@types/swagger-ui-express": "^4.1.8",
+    "concurrently": "^10.0.6",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
