@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1260 840" width="1260" height="840" font-family="Inter, system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#52514e"/>
+    </marker>
+    <marker id="arrowBrand" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b4bdb"/>
+    </marker>
+    <marker id="arrowEvent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#eb6834"/>
+    </marker>
+    <marker id="arrowDb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2a78d6"/>
+    </marker>
+    <style>
+      .title { font-size: 22px; font-weight: 800; fill: #0b0b0b; }
+      .subtitle { font-size: 13px; fill: #52514e; }
+      .h { font-size: 16px; font-weight: 700; fill: #0b0b0b; }
+      .t { font-size: 12.5px; fill: #52514e; }
+      .tag { font-size: 11px; font-weight: 700; fill: #ffffff; }
+      .lbl { font-size: 11.5px; fill: #52514e; }
+      .lblEvent { font-size: 11.5px; fill: #b4461b; font-weight: 600; }
+      .lblDb { font-size: 11.5px; fill: #1c5cab; font-weight: 600; }
+      .box { fill: #ffffff; stroke: #c3c2b7; stroke-width: 1.5; }
+      .svc { fill: #ffffff; stroke: #a596fb; stroke-width: 1.5; }
+      .core { fill: #f1efff; stroke: #5b4bdb; stroke-width: 2.5; }
+      .http { stroke: #52514e; stroke-width: 1.8; fill: none; }
+      .sync { stroke: #5b4bdb; stroke-width: 2; fill: none; }
+      .event { stroke: #eb6834; stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+      .db { stroke: #2a78d6; stroke-width: 2; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="1260" height="840" fill="#fcfcfb"/>
+  <text x="40" y="44" class="title">Evently: high-level architecture</text>
+  <text x="40" y="66" class="subtitle">Five stateless services behind a gateway · one Postgres schema per service · events via transactional outbox + Redis Streams</text>
+
+  <!-- Browser -->
+  <rect x="490" y="92" width="280" height="58" rx="12" class="box"/>
+  <text x="630" y="117" text-anchor="middle" class="h">Web app</text>
+  <text x="630" y="136" text-anchor="middle" class="t">React 19 · Chakra UI · TanStack Query</text>
+
+  <!-- Redis cache (top right) -->
+  <rect x="960" y="92" width="260" height="58" rx="12" fill="#ffffff" stroke="#c3c2b7" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="1090" y="116" text-anchor="middle" class="h">Redis (cache)</text>
+  <text x="1090" y="135" text-anchor="middle" class="t">rate limits · catalog cache · sold-out flags</text>
+
+  <!-- Browser -> Gateway -->
+  <line x1="630" y1="150" x2="630" y2="186" class="http" marker-end="url(#arrow)"/>
+  <text x="640" y="173" class="lbl">HTTPS /api/v1</text>
+
+  <!-- Gateway -->
+  <rect x="40" y="190" width="1180" height="72" rx="14" fill="#2b2369"/>
+  <text x="630" y="220" text-anchor="middle" font-size="17" font-weight="800" fill="#ffffff">API Gateway  ·  :8080</text>
+  <text x="630" y="243" text-anchor="middle" font-size="12.5" fill="#e2ddff">JWT verification · role checks · per-IP &amp; per-user rate limits · routing · strips/injects identity headers · Swagger UI</text>
+  <line x1="1090" y1="150" x2="1090" y2="186" stroke="#898781" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- Gateway -> services -->
+  <line x1="172" y1="262" x2="172" y2="306" class="http" marker-end="url(#arrow)"/>
+  <line x1="477" y1="262" x2="477" y2="306" class="http" marker-end="url(#arrow)"/>
+  <line x1="782" y1="262" x2="782" y2="306" class="http" marker-end="url(#arrow)"/>
+  <line x1="1087" y1="262" x2="1087" y2="306" class="http" marker-end="url(#arrow)"/>
+  <text x="182" y="290" class="lbl">x-user-* + internal token</text>
+
+  <!-- Services -->
+  <rect x="40" y="310" width="265" height="112" rx="12" class="svc"/>
+  <text x="172" y="338" text-anchor="middle" class="h">auth-service</text>
+  <text x="172" y="360" text-anchor="middle" class="t">registration · login</text>
+  <text x="172" y="378" text-anchor="middle" class="t">bcrypt · JWT issuing</text>
+  <text x="172" y="404" text-anchor="middle" class="lbl">:4001</text>
+
+  <rect x="345" y="310" width="265" height="112" rx="12" class="svc"/>
+  <text x="477" y="338" text-anchor="middle" class="h">catalog-service</text>
+  <text x="477" y="360" text-anchor="middle" class="t">browse · search (cached)</text>
+  <text x="477" y="378" text-anchor="middle" class="t">admin CRUD · optimistic locking</text>
+  <text x="477" y="404" text-anchor="middle" class="lbl">:4002</text>
+
+  <rect x="650" y="310" width="265" height="112" rx="12" class="core"/>
+  <rect x="716" y="300" width="132" height="20" rx="10" fill="#5b4bdb"/>
+  <text x="782" y="314" text-anchor="middle" class="tag">CONSISTENCY CORE</text>
+  <text x="782" y="342" text-anchor="middle" class="h">booking-service</text>
+  <text x="782" y="364" text-anchor="middle" class="t">capacity · seats · bookings · waitlist</text>
+  <text x="782" y="382" text-anchor="middle" class="t">atomic conditional UPDATE (row lock)</text>
+  <text x="782" y="404" text-anchor="middle" class="lbl">:4003</text>
+
+  <rect x="955" y="310" width="265" height="112" rx="12" class="svc"/>
+  <text x="1087" y="338" text-anchor="middle" class="h">notify-service</text>
+  <text x="1087" y="360" text-anchor="middle" class="t">notification inbox · delivery</text>
+  <text x="1087" y="378" text-anchor="middle" class="t">analytics read models (CQRS)</text>
+  <text x="1087" y="404" text-anchor="middle" class="lbl">:4004</text>
+
+  <!-- catalog -> booking sync command -->
+  <line x1="610" y1="352" x2="646" y2="352" class="sync" marker-end="url(#arrowBrand)"/>
+  <text x="628" y="342" text-anchor="middle" font-size="10.5" font-weight="700" fill="#5b4bdb">sync</text>
+  <text x="628" y="370" text-anchor="middle" font-size="10.5" font-weight="700" fill="#5b4bdb">cmd</text>
+
+  <!-- Postgres -->
+  <rect x="40" y="600" width="1180" height="168" rx="14" fill="#f3f8ff" stroke="#2a78d6" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="60" y="756" class="h" fill="#1c5cab">PostgreSQL 17</text>
+  <text x="190" y="756" class="t">single instance · one schema per service · services never read each other's schemas</text>
+
+  <!-- service -> schema arrows (drawn under the bus) -->
+  <line x1="172" y1="422" x2="172" y2="652" class="db" marker-end="url(#arrowDb)"/>
+  <line x1="477" y1="422" x2="477" y2="652" class="db" marker-end="url(#arrowDb)"/>
+  <line x1="782" y1="422" x2="782" y2="652" class="db" marker-end="url(#arrowDb)"/>
+  <line x1="1087" y1="422" x2="1087" y2="652" class="db" marker-end="url(#arrowDb)"/>
+  <text x="180" y="582" class="lblDb">SQL · own schema</text>
+
+  <!-- Event bus -->
+  <rect x="40" y="488" width="1180" height="58" rx="12" fill="#fff4ee" stroke="#eb6834" stroke-width="1.5"/>
+  <text x="630" y="513" text-anchor="middle" class="h" fill="#b4461b">Redis Streams: integration event bus</text>
+  <text x="630" y="533" text-anchor="middle" class="t">evently:auth · evently:catalog · evently:booking  —  consumer group per service · deduplicated (exactly-once effects) · dead-letter after 5 failures</text>
+
+  <!-- publish (down) / consume (up) arrows -->
+  <line x1="122" y1="422" x2="122" y2="484" class="event" marker-end="url(#arrowEvent)"/>
+  <line x1="427" y1="422" x2="427" y2="484" class="event" marker-end="url(#arrowEvent)"/>
+  <line x1="527" y1="488" x2="527" y2="426" class="event" marker-end="url(#arrowEvent)"/>
+  <line x1="732" y1="422" x2="732" y2="484" class="event" marker-end="url(#arrowEvent)"/>
+  <line x1="832" y1="488" x2="832" y2="426" class="event" marker-end="url(#arrowEvent)"/>
+  <line x1="1137" y1="488" x2="1137" y2="426" class="event" marker-end="url(#arrowEvent)"/>
+  <text x="128" y="460" class="lblEvent">publish</text>
+  <text x="1143" y="460" class="lblEvent">consume</text>
+
+  <!-- schema cylinders -->
+  <g>
+    <path d="M102,664 a70,10 0 0,0 140,0 v54 a70,10 0 0,1 -140,0 z" fill="#ffffff" stroke="#2a78d6" stroke-width="1.5"/>
+    <ellipse cx="172" cy="664" rx="70" ry="10" fill="#cde2fb" stroke="#2a78d6" stroke-width="1.5"/>
+    <text x="172" y="696" text-anchor="middle" class="h">auth</text>
+    <text x="172" y="714" text-anchor="middle" class="t">users · outbox</text>
+  </g>
+  <g>
+    <path d="M407,664 a70,10 0 0,0 140,0 v54 a70,10 0 0,1 -140,0 z" fill="#ffffff" stroke="#2a78d6" stroke-width="1.5"/>
+    <ellipse cx="477" cy="664" rx="70" ry="10" fill="#cde2fb" stroke="#2a78d6" stroke-width="1.5"/>
+    <text x="477" y="696" text-anchor="middle" class="h">catalog</text>
+    <text x="477" y="714" text-anchor="middle" class="t">events · outbox</text>
+  </g>
+  <g>
+    <path d="M667,664 a115,10 0 0,0 230,0 v54 a115,10 0 0,1 -230,0 z" fill="#ffffff" stroke="#2a78d6" stroke-width="1.5"/>
+    <ellipse cx="782" cy="664" rx="115" ry="10" fill="#cde2fb" stroke="#2a78d6" stroke-width="1.5"/>
+    <text x="782" y="696" text-anchor="middle" class="h">booking</text>
+    <text x="782" y="714" text-anchor="middle" class="t">inventory · seats · bookings · waitlist</text>
+  </g>
+  <g>
+    <path d="M985,664 a102,10 0 0,0 204,0 v54 a102,10 0 0,1 -204,0 z" fill="#ffffff" stroke="#2a78d6" stroke-width="1.5"/>
+    <ellipse cx="1087" cy="664" rx="102" ry="10" fill="#cde2fb" stroke="#2a78d6" stroke-width="1.5"/>
+    <text x="1087" y="696" text-anchor="middle" class="h">notify</text>
+    <text x="1087" y="714" text-anchor="middle" class="t">notifications · read models</text>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(40,810)">
+    <line x1="0" y1="0" x2="34" y2="0" class="http" marker-end="url(#arrow)"/>
+    <text x="42" y="4" class="lbl">HTTP request</text>
+    <line x1="150" y1="0" x2="184" y2="0" class="sync" marker-end="url(#arrowBrand)"/>
+    <text x="192" y="4" class="lbl">synchronous internal command</text>
+    <line x1="390" y1="0" x2="424" y2="0" class="event" marker-end="url(#arrowEvent)"/>
+    <text x="432" y="4" class="lbl">integration event (async)</text>
+    <line x1="600" y1="0" x2="634" y2="0" class="db" marker-end="url(#arrowDb)"/>
+    <text x="642" y="4" class="lbl">SQL to the service's own schema</text>
+  </g>
+</svg>
