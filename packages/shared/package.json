@@ -1,0 +1,26 @@
+{
+  "name": "@evently/shared",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Building blocks shared by every Evently service: HTTP scaffolding, Postgres, Redis, outbox/stream messaging and event contracts.",
+  "exports": {
+    "./*": {
+      "development": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "express": "^5.2.0",
+    "ioredis": "^5.8.0",
+    "pg": "^8.16.0",
+    "pino": "^10.0.0",
+    "pino-http": "^11.0.0",
+    "zod": "^4.1.0"
+  }
+}
