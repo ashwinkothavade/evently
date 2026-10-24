@@ -2,6 +2,8 @@
 
 A ticketing platform where users browse events, book tickets (general admission or reserved seats), join waitlists and get notified, while admins manage events and view analytics. It is built as **microservices** with a **React + Chakra UI** frontend and engineered so that **tickets can never be oversold**, even when thousands of people book at the same moment.
 
+[![CI](https://github.com/ashwinkothavade/project-lumen/actions/workflows/ci.yml/badge.svg)](https://github.com/ashwinkothavade/project-lumen/actions/workflows/ci.yml)
+
 
 > **Live demo:** _to be added after deployment_ · **API docs:** `<gateway>/docs`
 
