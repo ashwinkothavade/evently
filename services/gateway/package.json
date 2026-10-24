@@ -1,0 +1,27 @@
+{
+  "name": "@evently/gateway",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Public API gateway: authentication, rate limiting, routing and API docs.",
+  "scripts": {
+    "dev": "tsx watch --conditions=development src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --conditions=development --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@evently/shared": "*",
+    "cors": "^2.8.5",
+    "express": "^5.2.0",
+    "express-rate-limit": "^8.2.0",
+    "helmet": "^8.1.0",
+    "http-proxy-middleware": "^3.0.5",
+    "jsonwebtoken": "^9.0.2",
+    "rate-limit-redis": "^6.0.1",
+    "swagger-ui-express": "^5.0.1",
+    "yaml": "^2.8.0",
+    "zod": "^4.1.0"
+  }
+}

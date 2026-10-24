@@ -1,0 +1,1272 @@
+openapi: 3.0.3
+info:
+  title: Evently API
+  version: 1.0.0
+  description: |
+    Public REST API of **Evently**, served by the API gateway, which routes each call to the owning microservice.
+
+    ## Authentication
+    Get a token from `POST /auth/login` or `POST /auth/register` and send it as
+    `Authorization: Bearer <token>`. Endpoints marked 🔒 need a token; 🛡️ needs the `admin` role.
+
+    ## Conventions
+    - Successful responses wrap the payload: `{ "data": … }`. Lists add `nextCursor` (keyset pagination) or `meta`.
+    - Errors always look like `{ "error": { "code", "message", "details?", "requestId" } }`.
+      Branch on the stable `code`, not on the message.
+    - Every response carries `X-Request-Id` for tracing across services.
+    - Rate limits: per IP on all `/api` routes, and per user on `POST /bookings`. Limits are reported in `RateLimit` / `RateLimit-Policy` headers.
+
+    ## Concurrency guarantees
+    - Tickets are never oversold: each booking claims capacity with one atomic conditional update.
+    - `POST /bookings` is **idempotent** when you send an `Idempotency-Key` header, so retries are always safe.
+    - Admin edits use **optimistic locking**: send the event version as `If-Match`.
+  contact:
+    name: Evently
+servers:
+  - url: /api/v1
+    description: This gateway
+  - url: http://localhost:8080/api/v1
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Registration, login and current user (auth-service)
+  - name: Events
+    description: Browse and search events (catalog-service); seat maps (booking-service)
+  - name: Bookings
+    description: Book, view and cancel tickets (booking-service)
+  - name: Waitlist
+    description: Join or leave a sold-out event's waitlist (booking-service)
+  - name: Notifications
+    description: In-app notification inbox (notify-service)
+  - name: Admin · Events
+    description: Event management (catalog-service; attendee list from booking-service)
+  - name: Admin · Analytics
+    description: Booking insights (notify-service read models; integrity from booking-service)
+
+paths:
+  # ------------------------------------------------------------------ auth
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Create an account
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Account created; returns a session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: '`EMAIL_TAKEN` – an account with this email exists.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Sign in
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Signed in.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me:
+    get:
+      tags: [Auth]
+      summary: 🔒 Current user
+      operationId: me
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The authenticated user.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ------------------------------------------------------------------ events
+  /events:
+    get:
+      tags: [Events]
+      summary: List upcoming events
+      description: |
+        Published events starting from now (or `from`), soonest first. Cached for ~5 s, so
+        `availableSeats` can lag slightly; booking always checks live availability.
+      operationId: listEvents
+      parameters:
+        - name: q
+          in: query
+          description: Case-insensitive search in name and venue.
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - name: venue
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - name: from
+          in: query
+          description: Only events starting at or after this time (default now).
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Only events starting before this time.
+          schema: { type: string, format: date-time }
+        - name: available
+          in: query
+          description: '`true` hides sold-out events.'
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Limit20'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+                  nextCursor: { $ref: '#/components/schemas/NextCursor' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /events/{id}:
+    get:
+      tags: [Events]
+      summary: Event details
+      description: Published and cancelled events are visible; drafts return 404.
+      operationId: getEvent
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: The event.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /events/{id}/seats:
+    get:
+      tags: [Events]
+      summary: Seat map (reserved-seating events)
+      operationId: getSeatMap
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Live seat availability, grouped by row.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/SeatMap' }
+        '400':
+          description: '`NOT_SEATED` – the event uses general admission.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /events/{id}/waitlist:
+    post:
+      tags: [Waitlist]
+      summary: 🔒 Join the waitlist
+      description: |
+        Only allowed when the event can't fit the requested quantity. When tickets free up,
+        waitlisted users are **booked automatically** (FIFO, first-fit) and notified.
+      operationId: joinWaitlist
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                quantity: { type: integer, minimum: 1, maximum: 100, default: 1 }
+      responses:
+        '201':
+          description: Joined; includes the queue position.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/WaitlistEntry' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`TICKETS_AVAILABLE`, `ALREADY_ON_WAITLIST`, `EVENT_CANCELLED` or `EVENT_STARTED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Waitlist]
+      summary: 🔒 Leave the waitlist
+      operationId: leaveWaitlist
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '204': { description: Left the waitlist. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /waitlist:
+    get:
+      tags: [Waitlist]
+      summary: 🔒 My waitlist entries
+      operationId: myWaitlist
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Entries with live position for those still waiting.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WaitlistEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ------------------------------------------------------------------ bookings
+  /bookings:
+    post:
+      tags: [Bookings]
+      summary: 🔒 Book tickets
+      description: |
+        Send `quantity` (general admission or auto-assigned best seats) **or** `seatIds`
+        (picked from the seat map). Capacity is claimed atomically, so concurrent requests can never oversell.
+
+        Send an `Idempotency-Key` to make retries safe: repeating a request with the same key
+        returns the original booking with `200` and `Idempotent-Replayed: true`.
+      operationId: createBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Unique per booking attempt (e.g. a UUID). 8–100 characters.
+          schema: { type: string, minLength: 8, maxLength: 100 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBookingRequest' }
+            examples:
+              generalAdmission:
+                summary: Two general-admission tickets
+                value: { eventId: 6c1f1e0e-6a3b-4c43-9a51-2b1f3f2c9e10, quantity: 2 }
+              pickSeats:
+                summary: Specific seats
+                value: { eventId: 6c1f1e0e-6a3b-4c43-9a51-2b1f3f2c9e10, seatIds: [8053a98d-76e8-4bf1-8dd8-ae2074d9d512] }
+      responses:
+        '201':
+          description: Booking confirmed.
+          headers:
+            Location: { schema: { type: string }, description: URL of the new booking }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Booking' }
+        '200':
+          description: Idempotent replay; the booking created earlier with this key.
+          headers:
+            Idempotent-Replayed: { schema: { type: string, enum: ['true'] } }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Booking' }
+        '400':
+          description: |
+            `VALIDATION_ERROR`, `QUANTITY_LIMIT_EXCEEDED`, `INVALID_SEAT` (seat not in this event) or
+            `SEAT_SELECTION_NOT_SUPPORTED` (seatIds on a general-admission event).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            - `SOLD_OUT` – no tickets left (`details.waitlistUrl` points to the waitlist)
+            - `INSUFFICIENT_CAPACITY` – fewer tickets left than requested (`details.available`)
+            - `SEAT_UNAVAILABLE` – a chosen seat was just taken (`details.seatIds`)
+            - `EVENT_CANCELLED`, `EVENT_STARTED`
+            - `IDEMPOTENCY_KEY_REUSED` – the key was used for a different event
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  code: SOLD_OUT
+                  message: This event is sold out. Join the waitlist to be notified when a spot opens.
+                  details: { available: 0, waitlistUrl: /api/v1/events/6c1f…/waitlist }
+                  requestId: 1218f6eb-1d2e-4487-898f-69a67a2fb127
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Busy' }
+    get:
+      tags: [Bookings]
+      summary: 🔒 My booking history
+      operationId: listBookings
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [confirmed, cancelled] }
+        - $ref: '#/components/parameters/Limit20'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Booking' }
+                  nextCursor: { $ref: '#/components/schemas/NextCursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /bookings/{id}:
+    get:
+      tags: [Bookings]
+      summary: 🔒 Booking details
+      description: Users see only their own bookings (others return 404); admins see all.
+      operationId: getBooking
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: The booking.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Booking' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bookings/{id}/cancel:
+    post:
+      tags: [Bookings]
+      summary: 🔒 Cancel a booking
+      description: |
+        Releases the tickets (and seats). In the same transaction, freed tickets are offered to the
+        waitlist; `waitlistPromoted` says how many waiting users were booked.
+      operationId: cancelBooking
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Booking'
+                      - type: object
+                        properties:
+                          waitlistPromoted: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`ALREADY_CANCELLED` or `EVENT_STARTED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /bookings/{id}/calendar.ics:
+    get:
+      tags: [Bookings]
+      summary: 🔒 Download as calendar entry
+      operationId: bookingCalendar
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: RFC 5545 iCalendar file.
+          content:
+            text/calendar:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------------ notifications
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: 🔒 My notifications
+      operationId: listNotifications
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: unread
+          in: query
+          description: '`true` returns only unread notifications.'
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  meta:
+                    type: object
+                    properties:
+                      unreadCount: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      summary: 🔒 Mark one as read
+      operationId: markNotificationRead
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Updated notification.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Notification' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: 🔒 Mark all as read
+      operationId: markAllNotificationsRead
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Number of notifications updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      updated: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ------------------------------------------------------------------ admin: events
+  /admin/events:
+    get:
+      tags: [Admin · Events]
+      summary: 🛡️ List all events (any status)
+      operationId: adminListEvents
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/EventStatus' }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Events, latest start first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+                  meta: { $ref: '#/components/schemas/OffsetMeta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin · Events]
+      summary: 🛡️ Create an event
+      description: |
+        Provide `capacity` for general admission **or** `seating` for reserved seating
+        (capacity = rows × seatsPerRow; rows are labelled A, B, C…).
+      operationId: adminCreateEvent
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateEventRequest' }
+      responses:
+        '201':
+          description: Created.
+          headers:
+            ETag: { schema: { type: string }, description: 'Event version, e.g. "1"' }
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Busy' }
+
+  /admin/events/{id}:
+    get:
+      tags: [Admin · Events]
+      summary: 🛡️ Get an event (any status)
+      operationId: adminGetEvent
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: The event; `ETag` carries its version.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Event' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Admin · Events]
+      summary: 🛡️ Update an event (optimistic locking)
+      description: |
+        Send the version you loaded as `If-Match: "<version>"` (or `version` in the body).
+        If someone changed the event in the meantime you get `412 VERSION_MISMATCH`.
+        Ticket holders are notified when the time or venue changes. Raising capacity promotes the waitlist.
+      operationId: adminUpdateEvent
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: If-Match
+          in: header
+          description: Event version you are editing, e.g. `"3"`.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateEventRequest' }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Event'
+                      - type: object
+                        properties:
+                          waitlistPromoted: { type: integer }
+        '400':
+          description: '`VALIDATION_ERROR`, `VERSION_REQUIRED` or `INVALID_TIME_RANGE`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`CAPACITY_BELOW_BOOKED`, `SEATED_CAPACITY_FIXED` or `EVENT_CANCELLED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '412':
+          description: '`VERSION_MISMATCH` – reload and retry. `details.currentVersion` is included.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/events/{id}/cancel:
+    post:
+      tags: [Admin · Events]
+      summary: 🛡️ Cancel an event
+      description: Cancels every confirmed booking, expires the waitlist and notifies all ticket holders.
+      operationId: adminCancelEvent
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500, description: Shown to attendees. }
+      responses:
+        '200':
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Event'
+                      - type: object
+                        properties:
+                          bookingsCancelled: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`ALREADY_CANCELLED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/events/{id}/bookings:
+    get:
+      tags: [Admin · Events]
+      summary: 🛡️ Attendee list
+      operationId: adminEventBookings
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Bookings for the event, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Attendee' }
+                  meta: { $ref: '#/components/schemas/OffsetMeta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------------------ admin: analytics
+  /admin/analytics/overview:
+    get:
+      tags: [Admin · Analytics]
+      summary: 🛡️ Headline metrics
+      operationId: analyticsOverview
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Totals across all events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/AnalyticsOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/analytics/popular-events:
+    get:
+      tags: [Admin · Analytics]
+      summary: 🛡️ Most-booked events
+      operationId: analyticsPopular
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+      responses:
+        '200':
+          description: Ranked by tickets sold.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PopularEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/analytics/capacity-utilization:
+    get:
+      tags: [Admin · Analytics]
+      summary: 🛡️ Capacity utilization per event
+      operationId: analyticsUtilization
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: upcoming
+          in: query
+          description: Only events that haven't started (default true).
+          schema: { type: boolean, default: true }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Fullest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/UtilizationRow' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/analytics/daily:
+    get:
+      tags: [Admin · Analytics]
+      summary: 🛡️ Daily booking and cancellation stats
+      description: One row per UTC day, zero-filled. Defaults to the last 30 days; max range 366 days.
+      operationId: analyticsDaily
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+      responses:
+        '200':
+          description: Daily series.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/DailyStat' }
+                  meta:
+                    type: object
+                    properties:
+                      from: { type: string, format: date }
+                      to: { type: string, format: date }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/analytics/events/{id}:
+    get:
+      tags: [Admin · Analytics]
+      summary: 🛡️ Per-event drill-down
+      operationId: analyticsEvent
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+      responses:
+        '200':
+          description: Totals, cancellation rate and daily series for one event.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/EventAnalytics' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/analytics/integrity:
+    get:
+      tags: [Admin · Analytics]
+      summary: 🛡️ Inventory integrity audit
+      description: |
+        Recomputes every event's sold-ticket counter from the bookings (and active seat
+        assignments) and reports any drift. `ok: true` means the counters are exact.
+      operationId: analyticsIntegrity
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Audit result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/IntegrityReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from the previous page's `nextCursor`.
+      schema: { type: string }
+    Limit20:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    FromDate:
+      name: from
+      in: query
+      description: First day (inclusive), YYYY-MM-DD.
+      schema: { type: string, format: date }
+    ToDate:
+      name: to
+      in: query
+      description: Last day (inclusive), YYYY-MM-DD. Defaults to today.
+      schema: { type: string, format: date }
+
+  responses:
+    ValidationError:
+      description: '`VALIDATION_ERROR` – `details` lists each invalid field.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Request validation failed
+              details: [{ path: quantity, message: 'Too small: expected number to be >=1' }]
+              requestId: 5eaf0a83-81dd-4870-b9f4-188a25cb29b3
+    Unauthorized:
+      description: '`UNAUTHORIZED` – missing, invalid or expired token (or wrong credentials).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: '`FORBIDDEN` – requires the admin role.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: '`NOT_FOUND` – the resource does not exist or is not visible to you.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: '`RATE_LIMITED` – slow down; see the `RateLimit` header.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Busy:
+      description: '`BUSY` / `SERVICE_UNAVAILABLE` – transient overload; retry after `Retry-After` seconds (safe with an Idempotency-Key).'
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string, description: 'Stable machine-readable code., example: SOLD_OUT' }
+            message: { type: string }
+            details: { description: Extra structured context (varies by code). }
+            requestId: { type: string }
+
+    NextCursor:
+      type: string
+      nullable: true
+      description: Pass as `cursor` to get the next page; `null` on the last page.
+
+    OffsetMeta:
+      type: object
+      properties:
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    Role:
+      type: string
+      enum: [user, admin]
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        createdAt: { type: string, format: date-time }
+
+    RegisterRequest:
+      type: object
+      required: [email, name, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        name: { type: string, minLength: 1, maxLength: 100 }
+        password: { type: string, minLength: 8, maxLength: 72 }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+
+    SessionResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            token: { type: string, description: 'JWT – send as `Authorization: Bearer <token>`.' }
+            user: { $ref: '#/components/schemas/User' }
+
+    EventStatus:
+      type: string
+      enum: [draft, published, cancelled]
+
+    Event:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        venue: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time, nullable: true }
+        capacity: { type: integer }
+        bookedCount: { type: integer, description: Tickets sold (may lag a few seconds in listings). }
+        availableSeats: { type: integer }
+        soldOut: { type: boolean }
+        priceCents: { type: integer, description: Price per ticket in cents (USD). }
+        maxPerBooking: { type: integer }
+        isSeated: { type: boolean }
+        seating:
+          type: object
+          nullable: true
+          properties:
+            rows: { type: integer }
+            seatsPerRow: { type: integer }
+        status: { $ref: '#/components/schemas/EventStatus' }
+        cancelReason: { type: string, nullable: true }
+        version: { type: integer, description: Optimistic-locking version (send as If-Match when editing). }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CreateEventRequest:
+      type: object
+      required: [name, venue, startsAt]
+      properties:
+        name: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 5000 }
+        venue: { type: string, maxLength: 200 }
+        startsAt: { type: string, format: date-time, description: Must be in the future. }
+        endsAt: { type: string, format: date-time }
+        capacity: { type: integer, minimum: 1, maximum: 1000000, description: General admission only. }
+        seating:
+          type: object
+          description: Reserved seating only (instead of capacity).
+          required: [rows, seatsPerRow]
+          properties:
+            rows: { type: integer, minimum: 1, maximum: 26 }
+            seatsPerRow: { type: integer, minimum: 1, maximum: 100 }
+        priceCents: { type: integer, minimum: 0, default: 0 }
+        maxPerBooking: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        status: { type: string, enum: [draft, published], default: published }
+      example:
+        name: Summer Jazz Night
+        venue: Blue Note, New York
+        startsAt: '2026-12-31T20:00:00Z'
+        capacity: 250
+        priceCents: 4500
+
+    UpdateEventRequest:
+      type: object
+      description: Any subset of fields (at least one).
+      properties:
+        version: { type: integer, description: Alternative to the If-Match header. }
+        name: { type: string, maxLength: 200 }
+        description: { type: string, nullable: true }
+        venue: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time, nullable: true }
+        capacity: { type: integer, minimum: 1, description: Cannot go below tickets sold; fixed for seated events. }
+        priceCents: { type: integer, minimum: 0 }
+        maxPerBooking: { type: integer, minimum: 1, maximum: 100 }
+        status: { type: string, enum: [draft, published] }
+
+    SeatMap:
+      type: object
+      properties:
+        eventId: { type: string, format: uuid }
+        availableSeats: { type: integer }
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              label: { type: string, example: A }
+              seats:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string, format: uuid }
+                    number: { type: integer }
+                    available: { type: boolean }
+
+    CreateBookingRequest:
+      type: object
+      required: [eventId]
+      properties:
+        eventId: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1, maximum: 100, description: Defaults to 1 (or the number of seatIds). }
+        seatIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, format: uuid }
+
+    Booking:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        quantity: { type: integer }
+        status: { type: string, enum: [confirmed, cancelled] }
+        totalPriceCents: { type: integer }
+        source: { type: string, enum: [direct, waitlist], description: '`waitlist` = booked automatically from the waitlist.' }
+        seats:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              row: { type: string }
+              number: { type: integer }
+        createdAt: { type: string, format: date-time }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        event:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            venue: { type: string }
+            startsAt: { type: string, format: date-time }
+            endsAt: { type: string, format: date-time, nullable: true }
+            status: { $ref: '#/components/schemas/EventStatus' }
+
+    WaitlistEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        quantity: { type: integer }
+        status: { type: string, enum: [waiting, promoted, left, expired] }
+        position: { type: integer, nullable: true, description: 1-based queue position while waiting. }
+        bookingId: { type: string, format: uuid, nullable: true, description: Set once promoted. }
+        createdAt: { type: string, format: date-time }
+        event:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            startsAt: { type: string, format: date-time }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [BOOKING_CONFIRMED, BOOKING_CANCELLED, WAITLIST_PROMOTED, EVENT_CANCELLED, EVENT_UPDATED] }
+        title: { type: string }
+        body: { type: string }
+        data:
+          type: object
+          properties:
+            eventId: { type: string, format: uuid }
+            bookingId: { type: string, format: uuid }
+        read: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    Attendee:
+      type: object
+      properties:
+        id: { type: string, format: uuid, description: Booking id. }
+        quantity: { type: integer }
+        status: { type: string, enum: [confirmed, cancelled] }
+        source: { type: string, enum: [direct, waitlist] }
+        totalPriceCents: { type: integer }
+        createdAt: { type: string, format: date-time }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        user:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, nullable: true }
+            email: { type: string, nullable: true }
+
+    AnalyticsOverview:
+      type: object
+      properties:
+        bookings:
+          type: object
+          properties:
+            total: { type: integer }
+            confirmed: { type: integer }
+            cancelled: { type: integer }
+            cancellationRate: { type: number, description: 0–1; user/admin cancellations ÷ all bookings (event cancellations excluded). }
+            ticketsSold: { type: integer }
+            revenueCents: { type: integer }
+            waitlistPromotions: { type: integer }
+        events:
+          type: object
+          properties:
+            total: { type: integer }
+            upcoming: { type: integer }
+            soldOut: { type: integer }
+            cancelled: { type: integer }
+            totalCapacity: { type: integer }
+            ticketsBooked: { type: integer }
+            capacityUtilization: { type: number, description: 0–1 across published events. }
+            peopleOnWaitlists: { type: integer }
+
+    PopularEvent:
+      type: object
+      properties:
+        eventId: { type: string, format: uuid }
+        name: { type: string }
+        venue: { type: string }
+        startsAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/EventStatus' }
+        capacity: { type: integer }
+        ticketsSold: { type: integer }
+        waitlistSize: { type: integer }
+        totalBookings: { type: integer }
+        cancellations: { type: integer }
+        revenueCents: { type: integer }
+        utilization: { type: number }
+
+    UtilizationRow:
+      type: object
+      properties:
+        eventId: { type: string, format: uuid }
+        name: { type: string }
+        venue: { type: string }
+        startsAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/EventStatus' }
+        capacity: { type: integer }
+        bookedCount: { type: integer }
+        available: { type: integer }
+        waitlistSize: { type: integer }
+        utilization: { type: number, description: 0–1 }
+
+    DailyStat:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        bookings: { type: integer }
+        ticketsBooked: { type: integer }
+        revenueCents: { type: integer }
+        cancellations: { type: integer }
+        ticketsReleased: { type: integer }
+
+    EventAnalytics:
+      type: object
+      properties:
+        eventId: { type: string, format: uuid }
+        name: { type: string }
+        venue: { type: string }
+        startsAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/EventStatus' }
+        capacity: { type: integer }
+        bookedCount: { type: integer }
+        waitlistSize: { type: integer }
+        utilization: { type: number }
+        totalBookings: { type: integer }
+        confirmedBookings: { type: integer }
+        cancelledBookings: { type: integer }
+        cancellationRate: { type: number }
+        waitlistPromotions: { type: integer }
+        revenueCents: { type: integer }
+        daily:
+          type: array
+          items: { $ref: '#/components/schemas/DailyStat' }
+
+    IntegrityReport:
+      type: object
+      properties:
+        ok: { type: boolean }
+        eventsChecked: { type: integer }
+        mismatches:
+          type: array
+          items:
+            type: object
+            properties:
+              eventId: { type: string, format: uuid }
+              name: { type: string }
+              capacity: { type: integer }
+              bookedCount: { type: integer }
+              confirmedTickets: { type: integer }
+              activeSeats: { type: integer, nullable: true }
